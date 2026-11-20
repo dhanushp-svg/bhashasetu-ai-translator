@@ -39,7 +39,7 @@ if st.button("Translate", type="primary"):
         t0 = time.perf_counter()
         with st.spinner("Translating..."):
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.5-flash-lite",
                 contents=prompt,
             )
         latency_ms = (time.perf_counter() - t0) * 1000
