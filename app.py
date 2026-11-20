@@ -32,10 +32,20 @@ if st.button("Translate", type="primary"):
     if not text.strip():
         st.warning("Please enter some text first.")
     else:
+        tone_rules = {
+            "Formal": f"Use pure, polite, formal {tgt_lang} in native {tgt_lang} script only. Do not mix any other language.",
+            "Colloquial (Everyday)": f"Use natural, casual, everyday spoken {tgt_lang} in native {tgt_lang} script only. Do not use Hindi or other languages.",
+            "Code-Mixed": f"Use natural {tgt_lang}-English code-mixing (like everyday Bengaluru/urban speech) written in native {tgt_lang} script. Mix ONLY {tgt_lang} and English—never use Hindi or other scripts.",
+        }
+
         prompt = (
-            f"Translate the following text from {src_lang} to {tgt_lang} in a {tone} tone. "
-            f"Return ONLY the translated text without any explanation.\n\nText: {text}"
+            f"Translate the following text from {src_lang} to {tgt_lang}.\n"
+            f"Style rule: {tone_rules[tone]}\n"
+            f"Strict rule: Return ONLY the final translated sentence with no explanation.\n\n"
+            f"Text: {text}"
         )
+        t0 = time.perf_counter()
+        
         t0 = time.perf_counter()
         with st.spinner("Translating..."):
             response = client.models.generate_content(
