@@ -121,7 +121,7 @@ def fast_config(json_mode: bool = True, max_tokens: int | None = 400):
     """Low-latency Gemini config with thinking disabled."""
     kwargs = {
         "temperature": 0.2,
-        "thinking_config": types.ThinkingConfig(thinking_budget=0),
+        
     }
     if json_mode:
         kwargs["response_mime_type"] = "application/json"
