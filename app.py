@@ -16,6 +16,7 @@ if "GEMINI_API_KEY" not in st.secrets:
     st.stop()
 
 client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+MODEL_NAME = "gemini-3.5-flash-lite"
 
 # --- CONSTANTS & LOCALIZED UI ---
 TTS_CODES = {
@@ -97,14 +98,16 @@ UI_TEXT = {
 LANGUAGES = list(UI_TEXT.keys())
 
 # --- SESSION STATE ---
-if "src_lang" not in st.session_state:
-    st.session_state.src_lang = "English"
-if "tgt_lang" not in st.session_state:
-    st.session_state.tgt_lang = "Kannada"
-if "history" not in st.session_state:
-    st.session_state.history = []
-if "last_result" not in st.session_state:
-    st.session_state.last_result = None
+for key, default in [
+    ("src_lang", "English"),
+    ("tgt_lang", "Kannada"),
+    ("history", []),
+    ("last_result", None),
+    ("voice_result", None),
+    ("img_result", None),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 
 def swap_languages():
@@ -112,6 +115,19 @@ def swap_languages():
         st.session_state.tgt_lang,
         st.session_state.src_lang,
     )
+
+
+def fast_config(json_mode: bool = True, max_tokens: int | None = 400):
+    """Low-latency Gemini config with thinking disabled."""
+    kwargs = {
+        "temperature": 0.2,
+        "thinking_config": types.ThinkingConfig(thinking_budget=0),
+    }
+    if json_mode:
+        kwargs["response_mime_type"] = "application/json"
+    if max_tokens is not None:
+        kwargs["max_output_tokens"] = max_tokens
+    return types.GenerateContentConfig(**kwargs)
 
 
 def mask_pii(text: str) -> tuple[str, int]:
@@ -130,7 +146,7 @@ def mask_pii(text: str) -> tuple[str, int]:
 
 
 def generate_tts_bytes(text: str, lang_name: str):
-    """Generates MP3 audio bytes using gTTS."""
+    """Generates MP3 audio bytes on demand using gTTS."""
     try:
         tts = gTTS(text=text, lang=TTS_CODES.get(lang_name, "en"))
         buf = io.BytesIO()
@@ -164,9 +180,13 @@ def render_output_block(translation: str, translit: str, tgt_lang: str, key_pref
         st.caption(f"**Pronunciation (Romanized):** {translit}")
     with st.expander("Copyable Text"):
         st.code(translation, language=None)
-    audio_bytes = generate_tts_bytes(translation, tgt_lang)
-    if audio_bytes:
-        st.audio(audio_bytes, format="audio/mp3")
+    if st.button("Listen (Audio)", key=f"tts_{key_prefix}"):
+        with st.spinner("Generating audio..."):
+            audio_bytes = generate_tts_bytes(translation, tgt_lang)
+        if audio_bytes:
+            st.audio(audio_bytes, format="audio/mp3")
+        else:
+            st.warning("Audio temporarily unavailable.")
 
 
 # --- SIDEBAR: PRIVACY, DOMAIN & HISTORY ---
@@ -256,11 +276,9 @@ with tab_text:
                     )
                     with st.spinner("Generating 3-tone comparison..."):
                         resp = client.models.generate_content(
-                            model="gemini-3.6-flash",
+                            model=MODEL_NAME,
                             contents=prompt,
-                            config=types.GenerateContentConfig(
-                                response_mime_type="application/json", temperature=0.2
-                            ),
+                            config=fast_config(json_mode=True, max_tokens=500),
                         )
                     data = json.loads(resp.text)
                     latency_ms = (time.perf_counter() - t0) * 1000
@@ -276,16 +294,14 @@ with tab_text:
                         f"You are an expert native {tgt_lang} translator specializing in {domain} terminology.\n"
                         f"Style: {get_tone_rule(selected_tone_key, tgt_lang)}\n"
                         f"Never leak unrelated languages into {tgt_lang}.\n"
-                        f"Translate from {src_lang} to {tgt_lang} and also provide a Romanized pronunciation guide.\n"
+                        f"Translate from {src_lang} to {tgt_lang} and provide a Romanized pronunciation guide.\n"
                         f'Return ONLY JSON with exact keys: "translation" and "transliteration".\n\nText: {clean_text}'
                     )
                     with st.spinner("Translating..."):
                         resp = client.models.generate_content(
-                            model="gemini-3.6-flash",
+                            model=MODEL_NAME,
                             contents=prompt,
-                            config=types.GenerateContentConfig(
-                                response_mime_type="application/json", temperature=0.2
-                            ),
+                            config=fast_config(json_mode=True, max_tokens=300),
                         )
                     data = json.loads(resp.text)
                     latency_ms = (time.perf_counter() - t0) * 1000
@@ -314,9 +330,9 @@ with tab_text:
             try:
                 with st.spinner("Back-translating to check accuracy..."):
                     bt = client.models.generate_content(
-                        model="gemini-3.6-flash",
+                        model=MODEL_NAME,
                         contents=f"Translate literally from {res['tgt_lang']} back into {res['src_lang']} to verify meaning. Return ONLY the text:\n{res['translation']}",
-                        config=types.GenerateContentConfig(temperature=0.1),
+                        config=fast_config(json_mode=False, max_tokens=200),
                     )
                 st.info(f"**Back-Translation Check ({res['src_lang']}):** {bt.text.strip()}")
             except Exception as e:
@@ -342,22 +358,33 @@ with tab_voice:
                 )
                 with st.spinner("Detecting language & translating..."):
                     resp = client.models.generate_content(
-                        model="gemini-3.6-flash",
+                        model=MODEL_NAME,
                         contents=[
                             types.Part.from_bytes(data=audio_file.getvalue(), mime_type=audio_file.type or "audio/wav"),
                             prompt,
                         ],
-                        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2),
+                        config=fast_config(json_mode=True, max_tokens=400),
                     )
                 data = json.loads(resp.text)
                 latency_ms = (time.perf_counter() - t0) * 1000
-                st.info(f"**Detected Language:** {data.get('detected_language', 'Unknown')}")
-                st.write(f"**Transcript:** {data.get('transcript', '')}")
-                render_output_block(data.get("translation", ""), data.get("transliteration", ""), tgt_lang, "voice")
-                st.metric("Response Latency", f"{latency_ms:.0f} ms")
+                st.session_state.voice_result = {
+                    "detected_language": data.get("detected_language", "Unknown"),
+                    "transcript": data.get("transcript", ""),
+                    "translation": data.get("translation", ""),
+                    "transliteration": data.get("transliteration", ""),
+                    "tgt_lang": tgt_lang,
+                    "latency_ms": latency_ms,
+                }
                 save_history("Voice", data.get("detected_language", "Auto"), tgt_lang, data.get("transcript", ""), data.get("translation", ""))
             except Exception as e:
                 st.error(f"Voice Error: {e}")
+
+    if st.session_state.voice_result:
+        vres = st.session_state.voice_result
+        st.info(f"**Detected Language:** {vres['detected_language']}")
+        st.write(f"**Transcript:** {vres['transcript']}")
+        render_output_block(vres["translation"], vres["transliteration"], vres["tgt_lang"], "voice")
+        st.metric("Response Latency", f"{vres['latency_ms']:.0f} ms")
 
 # ==============================================================================
 # TAB 3: CAMERA / PHOTO SIGNBOARD TRANSLATION
@@ -381,21 +408,31 @@ with tab_camera:
                 )
                 with st.spinner("Reading image & translating..."):
                     resp = client.models.generate_content(
-                        model="gemini-3.6-flash",
+                        model=MODEL_NAME,
                         contents=[
                             types.Part.from_bytes(data=img_file.getvalue(), mime_type=img_file.type or "image/jpeg"),
                             prompt,
                         ],
-                        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2),
+                        config=fast_config(json_mode=True, max_tokens=500),
                     )
                 data = json.loads(resp.text)
                 latency_ms = (time.perf_counter() - t0) * 1000
-                st.write(f"**Extracted Text:** {data.get('extracted_text', '')}")
-                render_output_block(data.get("translation", ""), data.get("transliteration", ""), tgt_lang, "img")
-                st.metric("Response Latency", f"{latency_ms:.0f} ms")
+                st.session_state.img_result = {
+                    "extracted_text": data.get("extracted_text", ""),
+                    "translation": data.get("translation", ""),
+                    "transliteration": data.get("transliteration", ""),
+                    "tgt_lang": tgt_lang,
+                    "latency_ms": latency_ms,
+                }
                 save_history("Image", "Image OCR", tgt_lang, data.get("extracted_text", ""), data.get("translation", ""))
             except Exception as e:
                 st.error(f"Image Error: {e}")
+
+    if st.session_state.img_result:
+        ires = st.session_state.img_result
+        st.write(f"**Extracted Text:** {ires['extracted_text']}")
+        render_output_block(ires["translation"], ires["transliteration"], ires["tgt_lang"], "img")
+        st.metric("Response Latency", f"{ires['latency_ms']:.0f} ms")
 
 # ==============================================================================
 # TAB 4: DOCUMENT / PDF TRANSLATOR
@@ -421,13 +458,13 @@ with tab_doc:
                 try:
                     with st.spinner("Translating document..."):
                         resp = client.models.generate_content(
-                            model="gemini-3.6-flash",
+                            model=MODEL_NAME,
                             contents=(
                                 f"Translate this {domain} document into {tgt_lang}.\n"
                                 f"Style: {get_tone_rule(selected_tone_key, tgt_lang)}\n"
                                 f"Return ONLY the translated document text.\n\n{clean_doc}"
                             ),
-                            config=types.GenerateContentConfig(temperature=0.2),
+                            config=fast_config(json_mode=False, max_tokens=None),
                         )
                     translated_doc = resp.text.strip()
                     st.subheader(f"Translated Document ({tgt_lang})")
